@@ -58,3 +58,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(tabKey(tabId))
 })
+
+// Bridge to the local MCP server. Content scripts cannot reach 127.0.0.1 from a web
+// page origin; the worker can, through the host permission in the manifest.
+const SERVER = 'http://127.0.0.1:4319'
+
+async function request(path: string, body?: unknown): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(SERVER + path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    if (res.ok) return { ok: true }
+    return { ok: false, error: `server answered ${res.status}` }
+  } catch {
+    return { ok: false, error: 'agent not connected' }
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.type === 'ping') request('/health').then(reply)
+  else if (msg?.type === 'send') request('/feedback', { origin: msg.origin, mode: msg.mode, items: msg.items }).then(reply)
+  else return false
+  return true
+})
