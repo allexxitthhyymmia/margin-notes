@@ -1,0 +1,17 @@
+{
+  "name": "margin-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension: annotate any page, copy structured review feedback",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

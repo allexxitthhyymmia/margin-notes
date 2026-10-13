@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "margin-notes",
+  "version": "0.1.0",
+  "description": "Annotate any page and copy the notes as structured review feedback.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "margin-notes: toggle overlay" }
+}
