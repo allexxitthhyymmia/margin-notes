@@ -2,8 +2,19 @@
   "manifest_version": 3,
   "name": "margin-notes",
   "version": "0.1.0",
-  "description": "Annotate any page and copy the notes as structured review feedback.",
-  "permissions": ["activeTab", "scripting", "storage"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "margin-notes: toggle overlay" }
+  "description": "Annotate any page, copy the notes as review feedback or send them to a local agent.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "margin-notes: toggle overlay"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:4319/*"
+  ]
 }

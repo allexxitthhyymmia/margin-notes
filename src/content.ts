@@ -1,26 +1,17 @@
 // Review overlay. Select text or draw a rectangle, add a comment, then "Copy feedback".
 // Injected by the background worker. Injecting it twice is a no-op.
 
-type Kind = 'text' | 'area'
-interface Note {
-  id: string
-  kind: Kind
-  path: string
-  title: string
-  section: string
-  quote: string
-  comment: string
-  x: number
-  y: number
-  w: number
-  h: number
-}
+import { isUnsent, toMarkdown, type Item, type Kind, type Note } from './format'
+
 interface Rect {
   x: number
   y: number
   w: number
   h: number
 }
+
+type SendMode = 'batch' | 'live'
+type Reply = { ok: boolean; error?: string }
 
 declare global {
   interface Window {
@@ -29,6 +20,7 @@ declare global {
 }
 
 const KEY = `notes:${location.origin}`
+const MODE_KEY = 'sendMode'
 
 async function load(): Promise<Note[]> {
   try {
@@ -92,26 +84,6 @@ function textInRect(r: Rect): string {
 
 const clip = (s: string) => (s.length > 400 ? s.slice(0, 400) + ' [...]' : s)
 
-function toMarkdown(notes: Note[]): string {
-  const out: string[] = [`# Review feedback: ${location.origin}`, '']
-  const byPage = new Map<string, Note[]>()
-  for (const n of notes) {
-    if (!byPage.has(n.path)) byPage.set(n.path, [])
-    byPage.get(n.path)!.push(n)
-  }
-  let i = 0
-  for (const [path, list] of byPage) {
-    out.push(list[0].title ? `## ${path} (${list[0].title})` : `## ${path}`, '')
-    for (const n of list) {
-      i++
-      out.push(`${i}. [${n.kind}] Section: ${n.section ? `"${n.section}"` : '(top)'}`)
-      if (n.quote) out.push(`   > ${n.quote.replace(/\n+/g, ' ')}`)
-      out.push(`   Comment: ${n.comment.replace(/\n/g, '\n   ')}`, '')
-    }
-  }
-  return out.join('\n')
-}
-
 async function copy(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text)
@@ -151,6 +123,11 @@ button:disabled { opacity: .4; cursor: default; }
   border-radius: 6px; padding: 6px; font-size: 13px; }
 .pop .row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .ask { position: absolute; z-index: 4; }
+.toast.err { background: #dc2626; }
+.pin.sent { background: #16a34a; }
+.sep { width: 1px; align-self: stretch; background: #3f3f46; margin: 0 2px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #71717a; margin-left: 4px; }
+.dot.up { background: #22c55e; }
 .toast { position: fixed; right: 16px; bottom: 64px; background: #16a34a; color: #fff; padding: 6px 10px; border-radius: 6px; z-index: 5; font-size: 13px; }
 .list { position: fixed; right: 16px; bottom: 64px; width: 360px; max-height: 60vh; overflow: auto; background: #18181b; color: #fafafa;
   border-radius: 10px; padding: 10px; z-index: 4; font-size: 13px; box-shadow: 0 8px 28px rgba(0,0,0,.4); }
@@ -167,6 +144,8 @@ async function mount(): Promise<void> {
     },
   }
   let notes = await load()
+  let sendMode: SendMode = ((await chrome.storage.local.get(MODE_KEY))[MODE_KEY] as SendMode) || 'batch'
+  let agentUp = false
   if (cancelled) return
   let mode: 'off' | 'area' = 'off'
   let hidden = false
@@ -190,6 +169,10 @@ async function mount(): Promise<void> {
     <button data-a="list">List</button>
     <button data-a="hide">Hide</button>
     <button data-a="clear">Clear</button>
+    <span class="sep"></span>
+    <span class="dot" title="Agent not connected"></span>
+    <button data-a="mode" title="Batch: send with the Send button. Live: send each note on save."></button>
+    <button data-a="send"></button>
     <button data-a="copy" class="primary">Copy feedback</button>`
   root.appendChild(bar)
   const btn = (a: string) => bar.querySelector(`[data-a="${a}"]`) as HTMLButtonElement
@@ -204,9 +187,9 @@ async function mount(): Promise<void> {
     popEl = null
   }
 
-  function toast(msg: string): void {
+  function toast(msg: string, err = false): void {
     const t = document.createElement('div')
-    t.className = 'toast'
+    t.className = err ? 'toast err' : 'toast'
     t.textContent = msg
     root.appendChild(t)
     setTimeout(() => t.remove(), 1800)
@@ -219,6 +202,14 @@ async function mount(): Promise<void> {
     btn('clear').textContent = clearArmed ? 'Sure?' : 'Clear'
     btn('area').classList.toggle('on', mode === 'area')
     btn('hide').textContent = hidden ? 'Show' : 'Hide'
+    const unsent = notes.filter(isUnsent).length
+    btn('mode').textContent = sendMode === 'live' ? 'Live' : 'Batch'
+    btn('mode').classList.toggle('on', sendMode === 'live')
+    btn('send').textContent = `Send${unsent ? ` (${unsent})` : ''}`
+    btn('send').disabled = unsent === 0
+    const dot = bar.querySelector('.dot') as HTMLElement
+    dot.classList.toggle('up', agentUp)
+    dot.title = agentUp ? 'Agent connected' : 'Agent not connected (start the margin-notes MCP server)'
     marks.innerHTML = ''
     if (hidden) return
     here.forEach((n) => {
@@ -228,7 +219,7 @@ async function mount(): Promise<void> {
       b.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;height:${n.h}px;${n.kind === 'text' ? 'border-style:dotted;' : ''}`
       marks.appendChild(b)
       const p = document.createElement('div')
-      p.className = 'pin'
+      p.className = isUnsent(n) ? 'pin' : 'pin sent'
       p.textContent = String(idx)
       p.style.left = `${n.x + n.w - 11}px`
       p.style.top = `${n.y - 11}px`
@@ -240,6 +231,7 @@ async function mount(): Promise<void> {
           else n.comment = c
           save(notes)
           render()
+          if (c !== null && sendMode === 'live') send()
         }, true)
       }
       marks.appendChild(p)
@@ -296,7 +288,43 @@ async function mount(): Promise<void> {
       })
       save(notes)
       render()
+      if (sendMode === 'live') send()
     })
+  }
+
+  async function message<T>(msg: object): Promise<T | undefined> {
+    try {
+      return (await chrome.runtime.sendMessage(msg)) as T
+    } catch {
+      // Extension was reloaded: this content script is orphaned.
+      return undefined
+    }
+  }
+
+  async function ping(): Promise<void> {
+    const up = Boolean((await message<Reply>({ type: 'ping' }))?.ok)
+    if (up !== agentUp) {
+      agentUp = up
+      render()
+    }
+  }
+
+  // Send every unsent note of this origin to the agent.
+  async function send(): Promise<void> {
+    const items: Item[] = notes.flatMap((note, i) => (isUnsent(note) ? [{ n: i + 1, note, update: note.sent !== undefined }] : []))
+    if (!items.length) return
+    const res = await message<Reply>({ type: 'send', origin: location.origin, mode: sendMode, items })
+    agentUp = Boolean(res?.ok)
+    if (!res?.ok) {
+      render()
+      toast(`Not sent: ${res?.error || 'extension not reachable'}`, true)
+      return
+    }
+    const sentIds = new Map(items.map((it) => [it.note.id, it.note.comment]))
+    for (const n of notes) if (sentIds.has(n.id)) n.sent = sentIds.get(n.id)
+    save(notes)
+    render()
+    toast(`Sent ${items.length} note${items.length === 1 ? '' : 's'} to agent`)
   }
 
   function setMode(m: 'off' | 'area'): void {
@@ -387,16 +415,26 @@ async function mount(): Promise<void> {
       }
       render()
     }
-    if (a === 'copy') toast((await copy(toMarkdown(notes))) ? 'Feedback copied' : 'Copy failed')
+    if (a === 'mode') {
+      sendMode = sendMode === 'live' ? 'batch' : 'live'
+      chrome.storage.local.set({ [MODE_KEY]: sendMode }).catch(() => {})
+      render()
+      if (sendMode === 'live') send()
+    }
+    if (a === 'send') send()
+    if (a === 'copy') {
+      const md = toMarkdown(location.origin, notes.map((note, i) => ({ n: i + 1, note })))
+      toast((await copy(md)) ? 'Feedback copied' : 'Copy failed', false)
+    }
   })
 
   // Text selection: show a "Comment" button next to it.
-  let ask: HTMLElement | null = null
+  let askEl: HTMLElement | null = null
   document.addEventListener('mouseup', (e) => {
     if (e.composedPath().includes(host)) return
     setTimeout(() => {
-      ask?.remove()
-      ask = null
+      askEl?.remove()
+      askEl = null
       const sel = window.getSelection()
       const text = sel?.toString().trim() || ''
       if (!sel || !text || mode === 'area') return
@@ -410,11 +448,11 @@ async function mount(): Promise<void> {
       wrap.onmousedown = (ev) => ev.preventDefault()
       wrap.onclick = () => {
         wrap.remove()
-        ask = null
+        askEl = null
         add('text', r, clip(text))
       }
       root.appendChild(wrap)
-      ask = wrap
+      askEl = wrap
     }, 0)
   }, { signal })
 
@@ -430,7 +468,12 @@ async function mount(): Promise<void> {
 
   // Another tab on the same origin changed the notes.
   const onStorage = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-    if (area !== 'local' || !(KEY in changes)) return
+    if (area !== 'local') return
+    if (MODE_KEY in changes) {
+      sendMode = (changes[MODE_KEY].newValue as SendMode) || 'batch'
+      render()
+    }
+    if (!(KEY in changes)) return
     const next = changes[KEY].newValue
     if (JSON.stringify(next ?? []) === JSON.stringify(notes)) return
     notes = Array.isArray(next) ? (next as Note[]) : []
@@ -443,17 +486,20 @@ async function mount(): Promise<void> {
     if (location.pathname !== path) {
       path = location.pathname
       closePop()
-      ask?.remove()
+      askEl?.remove()
       setTimeout(render, 300)
     }
   }, 300)
   window.addEventListener('resize', render, { signal })
   setTimeout(render, 300)
+  ping()
+  const pinger = setInterval(ping, 5000)
 
   window.__marginNotes = {
     unmount() {
       live.abort()
       clearInterval(timer)
+      clearInterval(pinger)
       chrome.storage.onChanged.removeListener(onStorage)
       host.remove()
       delete window.__marginNotes
